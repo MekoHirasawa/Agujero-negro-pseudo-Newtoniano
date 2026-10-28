@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Potencial efectivo V(r, z)</title>
+<style>
+:root{box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);
+--bg:#ffffff;--fg:#1f2430;--muted:#667085;--line:#d0d5dd;color-scheme:light}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--bg:#14161b;--fg:#e8eaf0;--muted:#98a2b3;--line:#344054;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#14161b;--fg:#e8eaf0;--muted:#98a2b3;--line:#344054;color-scheme:dark}
+body{margin:0;padding:16px;background:var(--bg);color:var(--fg);font-family:system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:1180px;margin:0 auto}
+h1{font-size:1.15rem;margin:0 0 4px}
+.f{color:var(--muted);font-size:.9rem;margin:0 0 12px}
+.ctl{display:grid;grid-template-columns:auto 1fr 3.5rem;gap:8px 12px;align-items:center;margin-bottom:10px}
+.ctl output{font-variant-numeric:tabular-nums;text-align:right}
+input[type=range]{width:100%}
+canvas{width:100%;height:auto;display:block;border:1px solid var(--line);border-radius:8px}
+#ro{min-height:1.4em;color:var(--muted);font-size:.9rem;margin:6px 0 0;font-variant-numeric:tabular-nums}
+.nota{color:var(--muted);font-size:.85rem;margin:4px 0 0}
+.plots{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-start}
+.pw,.px{border:1px solid var(--line);border-radius:8px;overflow:hidden;box-sizing:border-box;min-width:0}
+.pw{position:relative;flex:1 1 520px}
+.px{flex:1 1 300px}
+.plots canvas{border:0;border-radius:0}
+#ov{position:absolute;left:0;top:0;height:100%;pointer-events:none}
+#cv{touch-action:none;cursor:crosshair}
+.btns{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0 0 10px}
+button{font:inherit;padding:4px 12px;border:1px solid var(--line);border-radius:6px;background:transparent;color:var(--fg);cursor:pointer}
+#st{color:var(--muted);font-size:.9rem}
+</style>
+</head>
+<body>
+<main>
+<h1>Potencial efectivo V(r, z)</h1>
+<p class="f">V = (1/2r²)·(P − b·r²/ρ³)² − 1/(2(ρ − 1)), con ρ = √(r² + z²)</p>
+<div class="ctl">
+  <label for="P">P</label><input id="P" type="range" min="-5" max="5" step="0.05" value="1.2"><output id="Pv"></output>
+  <label for="b">b</label><input id="b" type="range" min="-5" max="5" step="0.05" value="-1.3"><output id="bv"></output>
+  <label for="n">rango</label><input id="n" type="range" min="2" max="15" step="0.5" value="7.5"><output id="nv"></output>
+  <label for="sp">velocidad</label><input id="sp" type="range" min="0.2" max="5" step="0.1" value="1"><output id="spv"></output>
+</div>
+<div class="btns"><button id="bp">Pausa</button><button id="br">Reiniciar</button><button id="bc">Borrar</button><span id="st"></span></div>
+<div class="plots">
+  <div class="pw"><canvas id="cv"></canvas><canvas id="ov"></canvas></div>
+  <div class="px"><canvas id="cx"></canvas></div>
+</div>
+<p id="ro"></p>
+<p class="nota">Clic en el mapa de V(r, z) para soltar una partícula en reposo; clic y arrastre para darle velocidad inicial. A la derecha, la misma trayectoria vista desde arriba (plano x–y). Si cambiás P o b, la partícula vuelve a empezar desde el mismo punto.</p>
+<p class="nota">Los colores y las curvas de nivel se reparten por cuantiles de V sobre la región visible, así que la escala se adapta sola a cada P y b (la barra de colores no es lineal).</p>
+</main>
+<script>
+const N = 241, W = 780, H = 700, L = 64, T = 16, S = 620;
+const $ = id => document.getElementById(id);
+const sl = { P: $('P'), b: $('b'), n: $('n') };
+const cv = $('cv'), ctx = cv.getContext('2d');
+const dpr = Math.min(window.devicePixelRatio || 1, 2);
+cv.width = W * dpr; cv.height = H * dpr;
+const off = document.createElement('canvas'); off.width = off.height = N;
+const V = new Float32Array(N * N);
+let qs = new Float32Array(256);
+
+const stops = [[13,8,135],[75,3,161],[125,3,168],[168,34,150],[203,70,121],[229,107,93],[248,148,65],[253,195,40],[240,249,33]];
+const LUT = Array.from({ length: 256 }, (_, i) => {
+  const x = i / 255 * (stops.length - 1), k = Math.min(Math.floor(x), stops.length - 2), f = x - k;
+  return stops[k].map((c, m) => Math.round(c + (stops[k + 1][m] - c) * f));
+});
+
+const pot = (R, Z, P, b) => {
+  const d = Math.hypot(R, Z), a = P - b * R * R / (d * d * d);
+  return a * a / (2 * R * R) - 1 / (2 * (d - 1));
+};
+
+function compute(P, b, n) {
+  const h = 2 * n / (N - 1), c = (N - 1) / 2, vals = [];
+  for (let j = 0; j < N; j++) {
+    const Z = n - j * h;
+    for (let i = 0; i < N; i++) {
+      if (i === c) continue;
+      const R = -n + i * h, k = j * N + i;
+      if (Math.hypot(R, Z) <= 1.01) { V[k] = NaN; continue; }
+      V[k] = pot(R, Z, P, b);
+      vals.push(V[k]);
+    }
+    // el eje r = 0 se rellena con el valor del vecino para no dejar una franja vacía
+    V[j * N + c] = Math.abs(Z) <= 1.01 ? NaN : V[j * N + c + 1];
+  }
+  const s = Float32Array.from(vals).sort();
+  for (let i = 0; i < 256; i++) qs[i] = s[Math.round((0.02 + 0.96 * i / 255) * (s.length - 1))];
+}
+
+function idxOf(v) {
+  let lo = 0, hi = 255;
+  while (lo < hi) { const m = (lo + hi) >> 1; if (qs[m] >= v) hi = m; else lo = m + 1; }
+  return lo;
+}
+
+const fmt = v => Math.abs(v) >= 100 ? v.toExponential(1) : Math.abs(v) < 0.005 ? '0.00' : v.toFixed(2);
+const TAB = [[],[[3,2]],[[2,1]],[[3,1]],[[0,1]],[[0,3],[2,1]],[[0,2]],[[0,3]],[[0,3]],[[0,2]],[[0,1],[3,2]],[[0,1]],[[3,1]],[[2,1]],[[3,2]],[]];
+
+function draw() {
+  const P = +sl.P.value, b = +sl.b.value, n = +sl.n.value;
+  cP = P; cB = b; dirty = true;
+  if (init && (P !== lastP || b !== lastB)) resetSim();
+  lastP = P; lastB = b;
+  $('Pv').textContent = P.toFixed(2); $('bv').textContent = b.toFixed(2); $('nv').textContent = n;
+  compute(P, b, n);
+  const css = getComputedStyle(document.documentElement);
+  const fg = css.getPropertyValue('--fg').trim(), bg = css.getPropertyValue('--bg').trim(), muted = css.getPropertyValue('--muted').trim();
+
+  // mapa de color
+  const octx = off.getContext('2d'), img = octx.createImageData(N, N);
+  for (let k = 0; k < N * N; k++) {
+    const v = V[k], o = 4 * k;
+    if (v !== v) { img.data[o + 3] = 0; continue; }
+    const col = LUT[idxOf(v)];
+    img.data[o] = col[0]; img.data[o + 1] = col[1]; img.data[o + 2] = col[2]; img.data[o + 3] = 255;
+  }
+  octx.putImageData(img, 0, 0);
+
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
+  const dx = S / (N - 1);
+  ctx.save();
+  ctx.beginPath(); ctx.rect(L, T, S, S); ctx.clip();
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(off, L - dx / 2, T - dx / 2, S + dx, S + dx);
+
+  // curvas de nivel (marching squares), niveles en cuantiles equiespaciados
+  const X = i => L + i * dx, Y = j => T + j * dx;
+  const tt = (l, p, q) => (l - p) / (q - p);
+  ctx.beginPath();
+  for (let m = 0; m < 24; m++) {
+    const l = qs[8 + Math.round(m * 239 / 23)];
+    for (let j = 0; j < N - 1; j++) for (let i = 0; i < N - 1; i++) {
+      const a = V[j * N + i], bb = V[j * N + i + 1], c = V[(j + 1) * N + i + 1], d = V[(j + 1) * N + i];
+      if (a !== a || bb !== bb || c !== c || d !== d) continue;
+      const code = (a > l ? 8 : 0) | (bb > l ? 4 : 0) | (c > l ? 2 : 0) | (d > l ? 1 : 0);
+      if (code === 0 || code === 15) continue;
+      const pt = e => e === 0 ? [X(i + tt(l, a, bb)), Y(j)]
+                   : e === 1 ? [X(i + 1), Y(j + tt(l, bb, c))]
+                   : e === 2 ? [X(i + tt(l, d, c)), Y(j + 1)]
+                   :           [X(i), Y(j + tt(l, a, d))];
+      for (const [e1, e2] of TAB[code]) {
+        const p1 = pt(e1), p2 = pt(e2);
+        ctx.moveTo(p1[0], p1[1]); ctx.lineTo(p2[0], p2[1]);
+      }
+    }
+  }
+  ctx.strokeStyle = 'rgba(0,0,0,0.85)'; ctx.lineWidth = 0.8; ctx.stroke();
+
+  // horizonte r_s = 1
+  const cx = L + S / 2, cy = T + S / 2, rad = S / (2 * n);
+  ctx.beginPath(); ctx.arc(cx, cy, rad, 0, 2 * Math.PI);
+  ctx.fillStyle = '#000'; ctx.fill(); ctx.strokeStyle = 'crimson'; ctx.lineWidth = 1.5; ctx.stroke();
+  ctx.restore();
+
+  // ejes
+  ctx.strokeStyle = muted; ctx.lineWidth = 1; ctx.strokeRect(L, T, S, S);
+  ctx.fillStyle = fg; ctx.font = '12px system-ui,sans-serif';
+  const step = [0.5, 1, 2, 5].find(s => s >= n / 3) || 5;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+  for (let t = -Math.floor(n / step) * step; t <= n + 1e-9; t += step) {
+    const x = L + (t + n) / (2 * n) * S;
+    ctx.beginPath(); ctx.moveTo(x, T + S); ctx.lineTo(x, T + S + 4); ctx.stroke();
+    ctx.fillText(+t.toFixed(2), x, T + S + 6);
+  }
+  ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+  for (let t = -Math.floor(n / step) * step; t <= n + 1e-9; t += step) {
+    const y = T + (n - t) / (2 * n) * S;
+    ctx.beginPath(); ctx.moveTo(L - 4, y); ctx.lineTo(L, y); ctx.stroke();
+    ctx.fillText(+t.toFixed(2), L - 7, y);
+  }
+  ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+  ctx.fillText('r / r_s', L + S / 2, H - 8);
+  ctx.save(); ctx.translate(14, T + S / 2); ctx.rotate(-Math.PI / 2); ctx.fillText('z / r_s', 0, 0); ctx.restore();
+
+  // barra de colores
+  const bx = L + S + 22, bw = 16;
+  for (let i = 0; i < 256; i++) {
+    ctx.fillStyle = `rgb(${LUT[i].join(',')})`;
+    ctx.fillRect(bx, T + S - (i + 1) / 256 * S, bw, S / 256 + 1);
+  }
+  ctx.strokeStyle = muted; ctx.strokeRect(bx, T, bw, S);
+  ctx.fillStyle = fg; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+  for (const i of [0, 64, 128, 192, 255]) {
+    const y = T + S - i / 255 * S;
+    ctx.fillText(fmt(qs[i]), bx + bw + 6, y);
+  }
+}
+
+// lectura de V bajo el cursor
+cv.addEventListener('mousemove', e => {
+  const rc = cv.getBoundingClientRect(), k = W / rc.width;
+  const x = (e.clientX - rc.left) * k, y = (e.clientY - rc.top) * k, n = +sl.n.value;
+  const R = (x - L) / S * 2 * n - n, Z = n - (y - T) / S * 2 * n;
+  const ok = x >= L && x <= L + S && y >= T && y <= T + S && Math.hypot(R, Z) > 1.01 && Math.abs(R) > 0.01;
+  $('ro').textContent = ok ? `r = ${R.toFixed(2)},  z = ${Z.toFixed(2)},  V = ${pot(R, Z, +sl.P.value, +sl.b.value).toPrecision(4)}` : '';
+});
+cv.addEventListener('mouseleave', () => { $('ro').textContent = ''; });
+
+// ---------- partícula ----------
+const ov = $('ov'), vc = ov.getContext('2d'), cx = $('cx'), xc = cx.getContext('2d');
+ov.width = W * dpr; ov.height = H * dpr;
+const CXS = 480, L2 = 44, T2 = 12, S2 = 424;
+cx.width = cx.height = CXS * dpr;
+const VK = 0.4, MAXPTS = 8000, COL = '#00e5ff';
+let cP = 0, cB = 0, lastP = null, lastB = null, dirty = true;
+let init = null, sim = null, trail = [], lastPt = null, running = true, alive = false, drag = null;
+
+// r'' = -dV/dr, z'' = -dV/dz, phi' = (P - b r²/ρ³)/r²  (r con signo: cruzar el eje es seguir hacia r < 0)
+function acc(r, z) {
+  const q = r * r + z * z, rho = Math.sqrt(q), r3 = q * rho, r5 = r3 * q;
+  const A = cP - cB * r * r / r3;
+  const Ar = -cB * r * (2 * z * z - r * r) / r5, Az = 3 * cB * r * r * z / r5;
+  const g = 1 / (2 * (rho - 1) * (rho - 1));
+  return [-(A * Ar / (r * r) - A * A / (r * r * r) + g * r / rho),
+          -(A * Az / (r * r) + g * z / rho),
+          (cP ? cP / (r * r) : 0) - cB / r3];
+}
+const F = s => { const a = acc(s[0], s[1]); return [s[2], s[3], a[0], a[1], a[2]]; };
+const ax = (s, k, c) => s.map((v, i) => v + c * k[i]);
+function rk4(s, h) {
+  const k1 = F(s), k2 = F(ax(s, k1, h / 2)), k3 = F(ax(s, k2, h / 2)), k4 = F(ax(s, k3, h));
+  return s.map((v, i) => v + h / 6 * (k1[i] + 2 * k2[i] + 2 * k3[i] + k4[i]));
+}
+function stepSize(s) {
+  const rho = Math.hypot(s[0], s[1]), hm = Math.max(0.02, Math.min(Math.abs(s[0]), rho - 1));
+  const v = Math.hypot(s[2], s[3]) + 1e-6, a = acc(s[0], s[1]), am = Math.hypot(a[0], a[1]) + 1e-9;
+  return Math.min(0.02, 0.05 * hm / v, 0.1 * Math.sqrt(hm / am));
+}
+function record() {
+  const x = sim[0] * Math.cos(sim[4]), y = sim[0] * Math.sin(sim[4]);
+  if (lastPt && Math.hypot(sim[0] - lastPt[0], sim[1] - lastPt[1]) < 0.03 && Math.hypot(x - lastPt[2], y - lastPt[3]) < 0.03) return;
+  lastPt = [sim[0], sim[1], x, y];
+  trail.push(lastPt);
+  if (trail.length > MAXPTS) trail.splice(0, 500);
+}
+function stop(msg) { alive = false; $('st').textContent = msg; }
+function resetSim() {
+  sim = [init.r, init.z, init.vr, init.vz, 0];
+  trail = []; lastPt = null; alive = true; running = true;
+  $('bp').textContent = 'Pausa'; $('st').textContent = '';
+  record(); dirty = true;
+}
+function advance(T) {
+  let t = 0, k = 0;
+  while (alive && t < T && k++ < 3000) {
+    const h = Math.min(stepSize(sim), T - t);
+    sim = rk4(sim, h); t += h;
+    const rho = Math.hypot(sim[0], sim[1]);
+    if (!isFinite(rho) || !isFinite(sim[4])) { stop('error numérico'); break; }
+    if (rho <= 1.01) stop('la partícula cayó al agujero negro');
+    else if (rho > 4 * +sl.n.value) stop('la partícula escapó');
+    record();
+  }
+}
+
+function dot(c, x, y) {
+  c.beginPath(); c.arc(x, y, 5, 0, 2 * Math.PI);
+  c.fillStyle = '#fff'; c.fill(); c.strokeStyle = '#000'; c.lineWidth = 1.5; c.stroke();
+}
+function drawOverlay() {
+  const n = +sl.n.value;
+  const X = r => L + (r + n) / (2 * n) * S, Y = z => T + (n - z) / (2 * n) * S;
+  vc.setTransform(dpr, 0, 0, dpr, 0, 0); vc.clearRect(0, 0, W, H);
+  vc.save(); vc.beginPath(); vc.rect(L, T, S, S); vc.clip();
+  if (trail.length > 1) {
+    vc.beginPath(); vc.moveTo(X(trail[0][0]), Y(trail[0][1]));
+    for (const p of trail) vc.lineTo(X(p[0]), Y(p[1]));
+    vc.strokeStyle = COL; vc.lineWidth = 1.6; vc.lineJoin = 'round'; vc.stroke();
+  }
+  if (sim && isFinite(sim[0])) dot(vc, X(sim[0]), Y(sim[1]));
+  if (drag) {
+    vc.beginPath(); vc.moveTo(X(drag.r0), Y(drag.z0)); vc.lineTo(X(drag.r1), Y(drag.z1));
+    vc.strokeStyle = '#fff'; vc.lineWidth = 2; vc.stroke(); dot(vc, X(drag.r0), Y(drag.z0));
+  }
+  vc.restore();
+}
+function drawXY() {
+  const n = +sl.n.value, c = xc, css = getComputedStyle(document.documentElement);
+  const fg = css.getPropertyValue('--fg').trim(), bg = css.getPropertyValue('--bg').trim(), muted = css.getPropertyValue('--muted').trim();
+  const X = x => L2 + (x + n) / (2 * n) * S2, Y = y => T2 + (n - y) / (2 * n) * S2;
+  c.setTransform(dpr, 0, 0, dpr, 0, 0);
+  c.fillStyle = bg; c.fillRect(0, 0, CXS, CXS);
+  c.fillStyle = '#0e1016'; c.fillRect(L2, T2, S2, S2);
+  c.save(); c.beginPath(); c.rect(L2, T2, S2, S2); c.clip();
+  c.strokeStyle = 'rgba(255,255,255,0.18)'; c.lineWidth = 1;
+  c.beginPath(); c.moveTo(X(0), T2); c.lineTo(X(0), T2 + S2); c.moveTo(L2, Y(0)); c.lineTo(L2 + S2, Y(0)); c.stroke();
+  if (trail.length > 1) {
+    c.beginPath(); c.moveTo(X(trail[0][2]), Y(trail[0][3]));
+    for (const p of trail) c.lineTo(X(p[2]), Y(p[3]));
+    c.strokeStyle = COL; c.lineWidth = 1.4; c.lineJoin = 'round'; c.stroke();
+  }
+  c.beginPath(); c.arc(X(0), Y(0), S2 / (2 * n), 0, 2 * Math.PI);
+  c.fillStyle = '#000'; c.fill(); c.strokeStyle = 'crimson'; c.lineWidth = 1.5; c.stroke();
+  if (sim && isFinite(sim[0])) dot(c, X(sim[0] * Math.cos(sim[4])), Y(sim[0] * Math.sin(sim[4])));
+  c.restore();
+  c.strokeStyle = muted; c.lineWidth = 1; c.strokeRect(L2, T2, S2, S2);
+  c.fillStyle = fg; c.font = '12px system-ui,sans-serif';
+  const step = [0.5, 1, 2, 5].find(s => s >= n / 3) || 5;
+  for (let t = -Math.floor(n / step) * step; t <= n + 1e-9; t += step) {
+    c.textAlign = 'center'; c.textBaseline = 'top'; c.fillText(+t.toFixed(2), X(t), T2 + S2 + 6);
+    c.textAlign = 'right'; c.textBaseline = 'middle'; c.fillText(+t.toFixed(2), L2 - 7, Y(t));
+  }
+  c.textAlign = 'center'; c.textBaseline = 'alphabetic';
+  c.fillText('x / r_s', L2 + S2 / 2, CXS - 8);
+  c.save(); c.translate(12, T2 + S2 / 2); c.rotate(-Math.PI / 2); c.fillText('y / r_s', 0, 0); c.restore();
+}
+
+// clic = soltar en reposo; clic y arrastre = velocidad inicial
+function toData(e) {
+  const rc = cv.getBoundingClientRect(), k = W / rc.width, n = +sl.n.value;
+  const x = (e.clientX - rc.left) * k, y = (e.clientY - rc.top) * k;
+  return { r: (x - L) / S * 2 * n - n, z: n - (y - T) / S * 2 * n, inside: x >= L && x <= L + S && y >= T && y <= T + S };
+}
+cv.addEventListener('pointerdown', e => {
+  const p = toData(e);
+  if (!p.inside || Math.hypot(p.r, p.z) <= 1.05 || Math.abs(p.r) < 0.05) return;
+  cv.setPointerCapture(e.pointerId);
+  drag = { r0: p.r, z0: p.z, r1: p.r, z1: p.z }; dirty = true;
+});
+cv.addEventListener('pointermove', e => {
+  if (!drag) return;
+  const p = toData(e); drag.r1 = p.r; drag.z1 = p.z; dirty = true;
+});
+cv.addEventListener('pointerup', () => {
+  if (!drag) return;
+  const d = drag; drag = null;
+  init = { r: d.r0, z: d.z0, vr: (d.r1 - d.r0) * VK, vz: (d.z1 - d.z0) * VK };
+  resetSim();
+});
+cv.addEventListener('pointercancel', () => { drag = null; dirty = true; });
+
+$('bp').onclick = () => {
+  if (!sim || !alive) return;
+  running = !running; $('bp').textContent = running ? 'Pausa' : 'Reanudar';
+};
+$('br').onclick = () => { if (init) resetSim(); };
+$('bc').onclick = () => {
+  init = null; sim = null; trail = []; lastPt = null; alive = false; running = true;
+  $('bp').textContent = 'Pausa'; $('st').textContent = ''; dirty = true;
+};
+$('sp').addEventListener('input', () => { $('spv').textContent = (+$('sp').value).toFixed(1) + '×'; });
+$('spv').textContent = '1.0×';
+
+let lastTs = performance.now();
+function frame(ts) {
+  const dt = Math.min((ts - lastTs) / 1000 || 0, 0.05); lastTs = ts;
+  const live = sim && running && alive;
+  if (live) advance(dt * 5 * +$('sp').value);
+  if (dirty || live) { drawOverlay(); drawXY(); dirty = false; }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+let pend = false;
+const sched = () => { if (!pend) { pend = true; requestAnimationFrame(() => { pend = false; draw(); }); } };
+Object.values(sl).forEach(s => s.addEventListener('input', sched));
+draw();
+</script>
+</body>
+</html>
