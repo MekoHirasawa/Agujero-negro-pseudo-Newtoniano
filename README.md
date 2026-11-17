@@ -1,1 +1,0 @@
-# Agujero-negro-pseudo-Newtoniano
